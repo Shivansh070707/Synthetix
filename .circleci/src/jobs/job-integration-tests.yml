@@ -1,0 +1,72 @@
+# Starts optimism-integration L1 and L2 local chains and runs Optimism integration tests against them
+# TODO: The Optimism ops tool is currently unstable, thue the commented out code below.
+{{> job-header-machine.yml}}
+# set custom delimiter to avoid checksum parsing
+{{=<% %>=}}
+resource_class: large
+steps:
+  # get foundry
+  - restore_cache:
+      keys:
+        - foundry-bin-${foundry_locked_commit}-12
+  - rust/install: {}
+  - run: |
+      if [ ! -d ~/.foundry ]; then
+        curl -O https://raw.githubusercontent.com/foundry-rs/foundry/master/foundryup/foundryup && chmod +x ./foundryup
+        ./foundryup -C $foundry_locked_commit
+      fi
+      rm -rf *
+      echo 'export PATH="$PATH:$HOME/.foundry/bin"' >> $BASH_ENV
+
+  - save_cache:
+      key: foundry-bin-${foundry_locked_commit}-12
+      paths:
+        - ~/.foundry/bin
+
+  - checkout
+  - attach_workspace:
+      at: .
+  - restore_cache:
+      keys:
+        - v6-optimism-build-{{ checksum "package-lock.json" }}
+  - run:
+      name: Build docker containers if necessary
+      command: |
+        if [ ! -d ./optimism ]; then
+          npx hardhat ops --fresh --build --build-ops
+        fi;
+  - save_cache:
+      key: v6-optimism-build-{{ checksum "package-lock.json" }}
+      paths:
+        - ./optimism
+  - run:
+      name: Build cannonfiles
+      command: |
+        npx hardhat --network cannon cannon:build cannonfile.aggregator.toml
+        npx hardhat --network cannon cannon:build
+  - run:
+      name: Start docker chains
+      background: true
+      command: |
+        docker --version
+        npx hardhat ops --start
+  - cmd-wait-for-port:
+      port: 8545
+  - cmd-wait-for-port:
+      port: 9545
+  - run:
+      name: Run isolated layer 1 integration tests
+      command: |
+        npx hardhat --network localhost test:integration:l1 --deploy --provider-port 9545
+  - run:
+      name: Run isolated layer 2 integration tests
+      command: |
+        npx hardhat --network localhost test:integration:l2 --deploy --provider-port 9545
+  - run:
+      name: Run dual layer 1 and layer 2 integration tests
+      command: |
+        npx hardhat --network localhost test:integration:dual --deploy
+  - store_test_results:
+      path: /tmp/junit/
+  - store_artifacts:
+      path: /tmp/junit/
